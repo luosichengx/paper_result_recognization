@@ -1,16 +1,15 @@
+import configparser
 import logging
 from pyzbar import pyzbar
-import cv2
-from constants import *
-import numpy as np
 from predict import *
 import PIL.Image
 import PIL.ImageOps
 from pystrich.ean13 import EAN13Encoder
 
-def generate_barcode(assignment_id="000015034104"):
-    encoder = EAN13Encoder(assignment_id)
-    encoder.save("barcode6.png")
+def generate_barcode(assignment_id=""):
+    id = "0" * (12 - len(assignment_id)) + assignment_id
+    encoder = EAN13Encoder(id)
+    encoder.save("barcode/barcode" + str(assignment_id) + ".png")
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +31,9 @@ def noise_reduction(input=ORIGINAL_FILE):
     # 通过腐蚀再膨胀去除噪点
     erosion = cv2.erode(gray, kernel, 1)
     gray = cv2.dilate(erosion, kernel, 1)
+    # cv2.namedWindow("edges", 0)
+    # cv2.resizeWindow("edges", 2000, 2000)
+    # cv2.imshow("edges", gray)
     cv2.imwrite(DENOISE_FILE, gray)
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
@@ -138,6 +140,8 @@ def fix_linear_data(poss, axis=0, fix_gap=True, expect_num=None):
 
 # 根据比例判断是否符合大约相等
 def inrange(mid, cur):
+    if mid == 0:
+        return 1
     if cur / mid < 0.9:
         return -1
     elif cur / mid > 1.1:
@@ -147,6 +151,8 @@ def inrange(mid, cur):
 
 # 在比例基础上使用变化量（8 pixel）来放松检测机制
 def relaxed_inrange(mid, cur):
+    if mid == 0:
+        return 1
     if abs(mid - cur) < 8:
         return 0
     if cur / mid < 0.9:
@@ -156,8 +162,8 @@ def relaxed_inrange(mid, cur):
     return 0
 
 
-# 提取结果框，left指定答题框是在左侧还是右侧（left已废弃），up指定是否要削去首页的记录情况部分，其会影响识别
-def extract_check_result_from_page(file, left, up):
+# 提取结果框，left指定答题框是在左侧还是右侧（left指标已废弃），up指定是否要削去首页的记录情况部分，其会影响识别
+def extract_check_result_from_page(file, easy, upper_border):
     print(file)
     check_result = []
     image = load_image_file(file)
@@ -167,15 +173,11 @@ def extract_check_result_from_page(file, left, up):
     original_edge = edges.copy()
     # 膨胀边框使其明显
     dilate_edge = cv2.dilate(edges, kernel, 1)
-    # print(up, left)
-    if up:
-        upper_border = image.shape[0] // 3
-    else:
-        upper_border = 0
-    if left:
-        edges = dilate_edge[upper_border:image.shape[0], 0:image.shape[1] // 6]
-    else:
-        edges = dilate_edge[upper_border:image.shape[0], image.shape[1] // 4 * 3:]
+    # if up:
+    #     upper_border = image.shape[0] // 3
+    # else:
+    #     upper_border = 0
+    edges = dilate_edge[upper_border:image.shape[0], 0:image.shape[1] // 6]
     # cv2.namedWindow("edges", 0)
     # cv2.resizeWindow("edges", 400, 4000)
     # cv2.imshow("edges", edges)
@@ -184,7 +186,7 @@ def extract_check_result_from_page(file, left, up):
     boxes = []
     minside, maxwidth = image.shape[1], 0
     oridnary_size = cv2.contourArea(contours[0])
-    for i in range(5):
+    for i in range(min(len(contours),5)):
         largest_item = contours[i]
         x, y, w, h = cv2.boundingRect(largest_item)
         minside = min(minside, x)
@@ -193,12 +195,8 @@ def extract_check_result_from_page(file, left, up):
     # cv2.namedWindow("edges", 0)
     # cv2.resizeWindow("edges", 400, 4000)
     # cv2.imshow("edges", edges)
-    if left:
-        edges = dilate_edge[upper_border:image.shape[0], minside:minside + maxwidth + 15]
-        original_edge = original_edge[upper_border:image.shape[0], minside:minside + maxwidth + 15]
-    else:
-        edges = dilate_edge[upper_border:image.shape[0], image.shape[1] // 4 * 3 + minside:image.shape[1] // 4 * 3 + minside + maxwidth + 45]
-        original_edge = original_edge[upper_border:image.shape[0], image.shape[1] // 4 * 3 + minside:image.shape[1] // 4 * 3 + minside + maxwidth + 45]
+    edges = dilate_edge[upper_border:image.shape[0], minside:minside + maxwidth + 15]
+    original_edge_slice = original_edge[upper_border:image.shape[0], minside:minside + maxwidth + 15]
     # cv2.imshow("edges", edges)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -208,64 +206,76 @@ def extract_check_result_from_page(file, left, up):
         if cv2.contourArea(contours[i]) > oridnary_size * 0.6:
             boxes.append(contours[i])
     boxes = sorted(boxes, key=lambda x:cv2.boundingRect(x)[1])
+    index_list = []
     for i in range(len(boxes)):
         largest_item = boxes[i]
-        if left:
-            new_block, x = box_content_remove_margin(original_edge, largest_item, 0)
-            # # new_block = cv2.erode(new_block, kernel, 1)
-            # inner_edge = cv2.Canny(new_block, 50, 150, apertureSize = 3)
-            # # lines = cv2.HoughLinesP(new_block.copy(),1,np.pi/180,118, minLineLength=new_block.shape[0] // 2)
-            # # cv2.imshow(str(i), inner_edge)
-            # lines = cv2.HoughLines(inner_edge.copy(),1,np.pi/360,new_block.shape[1] // 2)
-            # x,y,xr,yb = box_by_line_detection(new_block.shape, lines)
-            # # print(x,y,xr,yb)
-            # new_block = new_block[y + 1:yb - 1, x + 1:xr - 1]
-            # # new_block = new_block[y:yb , x:xr ]
-            # # new_block = cv2.dilate(new_block, kernel, 1)
-            # cv2.imshow(str(i + 1), new_block)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-            # inner_contours, inner_hierarchy = cv2.findContours(new_block.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            # inner_contours = sorted(inner_contours, key=cv2.contourArea, reverse=True)
-            # try:
-            #     inner_largest_item = inner_contours[0]
-            # except IndexError:
-            #     print(x,y,xr,yb)
-            #     continue
-            # new_block, x = box_content_remove_margin(new_block, inner_largest_item, 0)
-            # # new_block, x = larger_bottom_box_content(edges, largest_item)
+        new_block, x = box_content_remove_margin(original_edge_slice, largest_item, 0)
+        if easy:
+            check = hasinside(new_block)
+            check_result.append(check)
         else:
-            epsilon = 0.01 * cv2.arcLength(largest_item, True)
-            approx = cv2.approxPolyDP(largest_item, epsilon, True)
-            new_block, x = box_content_remove_margin(edges, largest_item, 0)
-            if len(approx) != 4:
-                inner_edge = cv2.Canny(new_block, 50, 150, apertureSize = 3)
-                # lines = cv2.HoughLinesP(new_block.copy(),1,np.pi/180,118, minLineLength=new_block.shape[0] // 2)
-                lines = cv2.HoughLines(inner_edge.copy(),1,np.pi/360,new_block.shape[0] // 2)
-                x,y,xr,yb = box_by_line_detection(new_block.shape, lines)
-                new_block = new_block[y + 1:yb - 1, x + 1:xr - 1]
-                new_block = new_block[:,new_block.shape[1] // 5:]
-                inner_contours, inner_hierarchy = cv2.findContours(new_block.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                inner_contours = sorted(inner_contours, key=cv2.contourArea, reverse=True)
-                inner_largest_item = inner_contours[0]
-                new_block, x = box_content_remove_margin(new_block, inner_largest_item, 0)
-            else:
-                new_block, x = box_content_remove_margin(edges, largest_item, 10)
-                new_block = new_block[:,new_block.shape[1] // 8:]
-                # cv2.imshow(str(i), new_block)
-                inner_contours, inner_hierarchy = cv2.findContours(new_block.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                inner_contours = sorted(inner_contours, key=cv2.contourArea, reverse=True)
-                inner_largest_item = inner_contours[0]
-                new_block, x = box_content_remove_margin(new_block, inner_largest_item, 0)
-            # cv2.imshow(str(i), new_block)
-        check_result.append(new_block)
+            check_result.append(new_block)
+        x,y,w,h = cv2.boundingRect(largest_item)
+        index_image = original_edge[upper_border + y + h - 70:upper_border + y + h - 10, minside + x + 80:minside + x+ w + 60]
+        get_index(index_image, index_list)
         # cv2.imshow(str(i), new_block)
-        # print(predict_images([new_block], check_model))
-        # print(predict.predict_digital_image("tmp.png"))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     print(len(check_result))
-    return check_result
+    return check_result, index_list
+
+def hasinside(image):
+    # cv2.imshow("img", image)
+    image = image[image.shape[0] // 4 - 5: image.shape[0] // 4 * 3 + 5, image.shape[1] // 4 - 5: image.shape[1] // 4 * 3 + 5]
+    # cv2.waitKey()
+    # cv2.destroyAllWindows()
+    _,image = cv2.threshold(image,100,1, cv2.THRESH_BINARY)
+    image_sum = sum(sum(image))
+    if image_sum > 10 and image_sum > image.shape[0] * image.shape[1] // 20:
+        return 1
+    return 0
+
+def inratiorange(item, ratio):
+    x,y,w,h = cv2.boundingRect(item)
+    if w == 0 or h == 0:
+        return False
+    if w / h < ratio or h / w < ratio:
+        return False
+    return True
+
+
+def get_index(index_image, index_list):
+    inner_contours, inner_hierarchy = cv2.findContours(index_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    inner_contours = sorted(inner_contours, key=cv2.contourArea, reverse=True)
+    inner_contours = inner_contours[:2]
+    # cv2.imshow(str(i + 1), index_image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    if len(inner_contours) > 1 and inrange(cv2.contourArea(inner_contours[0]), cv2.contourArea(inner_contours[1])) == 0:
+        inner_contours = sorted(inner_contours, key=lambda x: cv2.boundingRect(x)[0])
+        x, y, w, h = merge_two_contours(inner_contours[0], inner_contours[1])
+        print(x, y, w, h)
+        index_image = index_image[y: y + h, x:x + w]
+    elif len(inner_contours) == 0:
+        # cv2.imshow("1", index_image)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+        index_list.append(0)
+        return
+    else:
+        index_image = box_content_remove_margin(index_image, inner_contours[0], 0)[0]
+    index = deal([index_image])
+    try:
+        index_list.append(index[0])
+    except IndexError:
+        index_list.append(0)
+
+
+
+def merge_two_contours(contours1, contours2):
+    x1,y1,w1,h1 = cv2.boundingRect(contours1)
+    x2,y2,w2,h2 = cv2.boundingRect(contours2)
+    return x1, min(y1, y2), x2 - x1 + w2, max(h2, h1)
 
 # 从连续的方框中提取内容序列
 def extract_data_sequence_from_rect(image=None, double_line=False, remove_boarder=False):
@@ -279,8 +289,10 @@ def extract_data_sequence_from_rect(image=None, double_line=False, remove_boarde
         edges = cv2.Canny(edges, 50, 150, apertureSize=3)
     else:
         edges = cv2.Canny(image, 50, 150, apertureSize=3)
-    lines = cv2.HoughLines(edges.copy(), 1, np.pi / 360,  edges.shape[1] // 3)
+    lines = cv2.HoughLines(edges.copy(), 1, np.pi / 360,  edges.shape[1] // 4)
     upper_boarder, lower_boarder = 0, edges.shape[0]
+    if lines is None:
+        return None
     for line in lines:
         # print(line)
         rho = int(abs(line[0][0]))  # 第一个元素是距离rho
@@ -293,21 +305,38 @@ def extract_data_sequence_from_rect(image=None, double_line=False, remove_boarde
             upper_boarder = max(upper_boarder, rho)
         if remove_boarder and (theta < (6 * np.pi / 10)) and (theta > (4 * np.pi / 10)) and rho > edges.shape[0] / 4 * 3:
             lower_boarder = min(lower_boarder, rho)
-    edges = edges[upper_boarder + 2:lower_boarder - 2,:]
-    image = image[upper_boarder + 2:lower_boarder - 2,:]
+    edges = edges[upper_boarder:lower_boarder,:]
+    image = image[upper_boarder:lower_boarder,:]
+    image[0:4,] = 0
+    image[-4:,] = 0
+
     if lower_boarder - upper_boarder > 50:
         return None
     inner_contours, hierarchy = cv2.findContours(image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    contours = list(filter(lambda x:cv2.boundingRect(x)[2] > 8 and cv2.boundingRect(x)[3] > (lower_boarder - upper_boarder) // 2, inner_contours))
+    contours = list(filter(lambda x:cv2.boundingRect(x)[2] > 10 and cv2.boundingRect(x)[3] > (lower_boarder - upper_boarder) // 2, inner_contours))
+    contours = list(filter(lambda x:cv2.boundingRect(x)[3] > 10 , contours))
     contours = sorted(contours, key=lambda x:cv2.boundingRect(x)[0])
     image_list = []
-    for i in contours:
-        x, y, w, h = cv2.boundingRect(i)
+    last_box = (0,0,0,0)
+    for i in range(len(contours)):
+        x, y, w, h = cv2.boundingRect(contours[i])
+        # print(x,y,w,h)
         new_block = image[y:y + h, x:x + w]
-        image_list.append(new_block)
-        # cv2.imshow("a", new_block)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        # print(x, last_box[0])
+        if x - last_box[0] > 25:
+            image_list.append(new_block)
+        else:
+            image_list = image_list[:-1]
+            x, y, w, h = merge_two_contours(contours[i - 1], contours[i])
+            new_block = image[y:y + h, x:x + w]
+            image_list.append(new_block)
+            # try:
+            #     cv2.imshow("a", new_block)
+            #     cv2.waitKey(0)
+            #     cv2.destroyAllWindows()
+            # except:
+            #     pass
+        last_box = (x, y, w, h)
     return image_list
 
 
@@ -344,24 +373,6 @@ def box_by_line_detection(image_shape, lines):
             # y = min(y, rho)
     return int(x),int(y),int(xr),int(yb)
 
-
-# 取图片中靠下部分的内容，实现的不好，需要替换，但目前无需求，所以没改
-def larger_bottom_box_content(edges, largest_item):
-    x, y, w, h = cv2.boundingRect(largest_item)
-    answer_block = edges[y + h // 2 + 10:y + h - 10, x + 10:x + w - 10]
-    # cv2.imshow(str(x), answer_block)
-    inner_contours, inner_hierarchy = cv2.findContours(answer_block.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-    inner_contours = sorted(inner_contours, key=cv2.contourArea, reverse=True)
-    largest_item = inner_contours[0]
-    x, y, w, h = cv2.boundingRect(largest_item)
-    new_block = answer_block[y:y + h, x:x + w]
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    return new_block, x
-
-class Model:
-    def __init__(self):
-        pass
 
 # 去除图片的特定边框宽度
 def box_content_remove_margin(edges, largest_item, margin):
@@ -443,7 +454,9 @@ def BarcodeDetector(file):
 
     barcodes = pyzbar.decode(img[img.shape[0] // 2:, :])
     if len(barcodes) == 0:
+        print("None")
         assignment_id = None
+        assignment_id = "0"
     else:
         assignment_id = barcodes[0].data.decode("utf-8")
 
@@ -452,6 +465,34 @@ def BarcodeDetector(file):
     # student_id, assignment_id = barcodes[0].data.decode("utf-8"), None
 
     return assignment_id, student_id
+
+
+
+def isfirstpage(file):
+    assignment_id, student_id = BarcodeDetector(file)
+    if student_id != None:
+        return True
+    # return False
+    # 如果上面那个忘记贴二维码，会漏检测，也可以用这个，但是依赖识别会有漏
+    image = load_image_file(file)
+    kernel = np.ones((3, 3), np.uint8)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    ret, edges = cv2.threshold(gray, THRESHOLD, 255, 1)
+    # 膨胀边框使其明显
+    dilate_edge = cv2.dilate(edges, kernel, 1)
+    edges = dilate_edge[image.shape[0] // 16 * 15:, image.shape[1] // 5 * 2:image.shape[1] // 5 * 3]
+    contours, hierarchy = cv2.findContours(edges.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    contours = list(filter(lambda x:cv2.contourArea(x) > 150, contours))
+    contours = sorted(contours, key=lambda x:cv2.boundingRect(x)[0])
+    if len(contours) < 2:
+        return False
+    index_item = contours[1]
+    x,y,w,h = cv2.boundingRect(index_item)
+    index_image = edges[y:y + h, x:x + w]
+    a = deal([index_image])
+    if a == [1]:
+        return True
+    return False
 
 
 # 两图象逐像素对比的函数
@@ -476,36 +517,36 @@ def deal(images):
     result = []
     samples = []
     for i in range(20):
-        img = cv2.imread(str(i) + ".png")
+        img = cv2.imread("printed_digit/" + str(i) + ".png")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         samples.append(img)
-    base = []
     for i in range(len(images)):
-        for j in range(len(images)):
+        base = []
+        for j in range(len(samples)):
             base.append((compare(images[i], samples[j]), j))
-    base.sort(reverse=True)
-    if base[0][0] > 0.6:
-        result.append(base[0][1])
+        base.sort(reverse=True)
+        if base[0][0] > 0.6:
+            result.append(base[0][1])
     return result
 
 
 # 按排序选取变化程度最高的数字
 def choose_change(images):
-    result = []
     samples = []
     for i in range(20):
         img = cv2.imread("printed_digit/" + str(i) + ".png")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         samples.append(img)
     base = []
-    for i in range(len(images)):
+    for i in range(min(20, len(images))):
         base.append((compare(images[i], samples[i]), i))
     base.sort()
-    if base[0][0] > 0.6:
+    if base[0][0] > 0.7:
         logging.warning("Nothing has changed significantly.")
     return base[0][1]
 
 
+# 检查是否包含上方成绩统计框
 def has_grade_block(file):
     image = load_image_file(file)
     kernel = np.ones((5, 5), np.uint8)
@@ -518,23 +559,24 @@ def has_grade_block(file):
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
     for i in range(2):
         x, y, w, h = cv2.boundingRect(contours[i])
-        if cv2.contourArea(contours[i]) > 300 and x < image.shape[1] // 4 and x + w > image.shape[1] // 4 * 3:
-            return True
-    return False
+        print(h)
+        if h > image.shape[0] // 20 and x < image.shape[1] // 4 and x + w > image.shape[1] // 4 * 3:
+            return image.shape[0] // 4 + y + h
+    return 0
 
 
-# 将试卷分为分割后的块
-def extract_score_result_from_page(file, up):
+# 提取结果框，up指定是否要削去首页的记录情况部分，其会影响识别
+def extract_score_result_from_page(file, upper_border):
     image = load_image_file(file)
-    kernel = np.ones((5, 5), np.uint8)
+    kernel = np.ones((3, 3), np.uint8)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     ret, edges = cv2.threshold(gray, THRESHOLD, 255, 1)
     edges = cv2.dilate(edges, kernel, 1)
-    if up:
-        upper_border = image.shape[0] // 3
-    else:
-        upper_border = 0
-    edges = edges[upper_border + 30:, :]
+    # if up:
+    #     upper_border = image.shape[0] // 3
+    # else:
+    #     upper_border = 0
+    edges = edges[upper_border:, :]
     contours, hierarchy = cv2.findContours(edges.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
     contours = list(filter(lambda x:cv2.boundingRect(x)[2] > edges.shape[1] // 2, contours))
     contours = sorted(contours, key=lambda x:cv2.boundingRect(x)[1])
@@ -548,23 +590,25 @@ def extract_score_result_from_page(file, up):
     print(result)
     return result
 
-# 试卷分析入口（main entry），试卷格式未定，所以无法完成
+# 试卷分析入口（main entry）
 def extract_paper(file, require_denoise=True):
     if require_denoise:
         noise_reduction(file)
         file = DENOISE_FILE
     assignment_id, student_id = BarcodeDetector(file)
-    up = False
-    if student_id != None and has_grade_block(file):
-        up = True
+    up = 0
+    if student_id != None:
+        up = has_grade_block(file)
     check_results = extract_score_result_from_page(file, up)
     return student_id, assignment_id, check_results
 
 
+config = configparser.ConfigParser()
+config.read("config.ini", encoding="utf-8")
+easy = config.get("Prediction", "type")
 # 主入口，作业分析（main entry）
 def extract_assignment(file, require_denoise=True):
     # 现在未使用，原为标记区分两个模板
-    left = True
     # 图片中有大量噪声时建议使用，一般不使用
     if require_denoise:
         noise_reduction(file)
@@ -573,15 +617,10 @@ def extract_assignment(file, require_denoise=True):
     assignment_id, student_id = BarcodeDetector(file)
     # assignment_id = extract_assignment_number(file)
     #检测是否包含成绩框
-    up = False
-    if student_id != None and has_grade_block(file):
-        up = True
-    check_results = extract_check_result_from_page(file, left, up)
-    return student_id, assignment_id, check_results
-
-
-# 测试修复函数的主要功能
-# def test_fix_linear_data():
-#     fix_linear_data([(11, 316, 13, 26), (38, 316, 17, 26), (68, 326, 15, 15), (94, 315, 18, 25)])
-#     fix_linear_data([(38, 316, 17, 26), (68, 316, 15, 3), (68, 326, 15, 15), (94, 315, 18, 25)], expect_num=4)
-#     fix_linear_data([(0, 350, 3, 100), (11, 316, 13, 26), (38, 316, 17, 26), (68, 316, 15, 10), (68, 326, 15, 15), (94, 315, 18, 25)])
+    up = 0
+    if student_id != None:
+        up = has_grade_block(file)
+    a = easy =="easy"
+    check_results, index_list = extract_check_result_from_page(file, a, up)
+    print(index_list)
+    return student_id, assignment_id, check_results, index_list
